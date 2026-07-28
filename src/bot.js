@@ -247,8 +247,12 @@ async function runHandler(ctx, text, options = {}) {
     // or the model hanging can never freeze the chat; it ends as "took too long".
     const budgetMs = Number(process.env.HANDLER_TIMEOUT_MS || 90000);
     if (busyState) busyState.update(ctx.chat.id, { stage: staged ? 'running staged progress' : 'working' });
+    // Pass evidence as a separate parameter so it's never persisted as user text —
+    // the old code appended it to `text`, so addConversation stored the blob and
+    // each turn compounded, crowding out real conversation at the limit=8 cap.
+    const evidenceContext = evidenceSummary(ctx.chat.id);
     const reply = await runWithDeadline(
-      () => withTyping(ctx, () => handleMessage(ctx.chat.id, text + `\n\n[Recent recorded actions for follow-up/status questions]\n${evidenceSummary(ctx.chat.id)}\nUse only actual checked evidence; do not invent market/tool results.`)),
+      () => withTyping(ctx, () => handleMessage(ctx.chat.id, text, evidenceContext)),
       budgetMs,
       { label: 'request' }
     );

@@ -15,7 +15,7 @@ async function getJson(url, { timeout = 15000, retries = 3, params } = {}) {
       return res.data;
     } catch (err) {
       lastErr = err;
-      const retriable = !err.response || err.response.status >= 500 || err.code === 'ECONNABORTED';
+      const retriable = !err.response || err.response.status >= 500 || err.response.status === 429 || err.code === 'ECONNABORTED';
       if (!retriable || attempt === retries) break;
       await sleep(300 * (attempt + 1));
     }

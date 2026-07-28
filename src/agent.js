@@ -151,7 +151,7 @@ async function resolveTarget(chatId, intent) {
   }
   // Default: re-analyze the last market.
   if (s.lastMarket) return { market: s.lastMarket };
-  return { error: 'Which market? Try /scan, then “analyze 2”, or paste a Polymarket link.' };
+  return { error: 'Which market? Try /scan, then "analyze 2", or paste a Polymarket link.' };
 }
 
 async function doAnalyze(chatId, intent) {
@@ -217,7 +217,7 @@ async function doPaperBuy(chatId, intent) {
   const s = session(chatId);
   const market = s.lastMarket;
   const decision = s.lastDecision;
-  if (!market) return '🤔 Analyze a market first, then I can paper-trade it. Try /scan → “analyze 1”.';
+  if (!market) return '🤔 Analyze a market first, then I can paper-trade it. Try /scan → "analyze 1".';
 
   const side = intent.side || (decision?.side) || 'YES';
   const stake = intent.stake && intent.stake > 0 ? intent.stake : 100;
@@ -286,7 +286,7 @@ function doResults(chatId) {
 
 function doWhy(chatId) {
   const a = db.getLatestAnalysis(chatId);
-  if (!a) return 'No analysis yet. Try /scan then “analyze 1”.';
+  if (!a) return 'No analysis yet. Try /scan then "analyze 1".';
   const factors = (() => { try { return JSON.parse(a.evidence_json); } catch { return []; } })();
   const lines = [
     `🧠 <b>Why: ${escapeHtml(oneLine(a.question, 120))}</b>`,
@@ -303,42 +303,43 @@ function doWhy(chatId) {
   return lines.join('\n');
 }
 
-async function doChat(chatId, text) {
+async function doChat(chatId, text, evidenceContext = '') {
   const history = db.getConversation(chatId, 8).map(m => ({ role: m.role, content: m.content }));
+  const systemParts = [
+    'You are PolyEdge, a friendly, sharp assistant for Polymarket trading decisions.',
+    languagePolicy(),
+    'Runtime self-context (use for ambiguous self-referential questions like latest version/who are you/what can you do):',
+    selfContextText(chatId),
+    'You can: scan trending markets, analyze a market into a BUY YES / BUY NO / NO-TRADE decision',
+    'with confidence + reasoning, and log paper trades for self-evaluation.',
+    'Keep replies short (3-6 lines), concrete, and conversational.',
+    'Use Telegram-friendly Markdown sparingly (**bold**, bullets, emojis); never leave broken/raw formatting.',
+    'If the user seems to want a decision or to find markets, nudge them: "Try /scan" or',
+    '"send me a market name or Polymarket link and I\'ll analyze it." Never invent live prices —',
+    'tell them to analyze a specific market for real numbers.',
+  ];
+  if (evidenceContext) {
+    systemParts.push('Recent recorded actions (use as evidence for follow-up questions; do not invent results):', evidenceContext);
+  }
   const messages = [
-    {
-      role: 'system',
-      content: [
-        'You are PolyEdge, a friendly, sharp assistant for Polymarket trading decisions.',
-        languagePolicy(),
-        'Runtime self-context (use for ambiguous self-referential questions like latest version/who are you/what can you do):',
-        selfContextText(chatId),
-        'You can: scan trending markets, analyze a market into a BUY YES / BUY NO / NO-TRADE decision',
-        'with confidence + reasoning, and log paper trades for self-evaluation.',
-        'Keep replies short (3-6 lines), concrete, and conversational.',
-        'Use Telegram-friendly Markdown sparingly (**bold**, bullets, emojis); never leave broken/raw formatting.',
-        'If the user seems to want a decision or to find markets, nudge them: "Try /scan" or',
-        '"send me a market name or Polymarket link and I\'ll analyze it." Never invent live prices —',
-        'tell them to analyze a specific market for real numbers.',
-      ].join('\n'),
-    },
+    { role: 'system', content: systemParts.join('\n') },
     ...history,
     { role: 'user', content: text },
   ];
   const reply = await chat(messages, { maxTokens: 700, temperature: 0.6 });
-  return reply ? render.renderChat(reply) : 'I’m here. Try /scan to see live markets, or send me a market to analyze.';
+  return reply ? render.renderChat(reply) : 'I\'m here. Try /scan to see live markets, or send me a market to analyze.';
 }
 
 const HELP = [
   '👋 <b>PolyEdge</b> — your Polymarket decision desk.',
   '',
-  'I find markets, judge them, and tell you <b>BUY YES / BUY NO / NO-TRADE</b> with a confidence score and reasoning — then track paper trades so we can see if I’m any good.',
+  "I find markets, judge them, and tell you <b>BUY YES / BUY NO / NO-TRADE</b> with a confidence score and reasoning — then track paper trades so we can see if I'm any good.",
   '',
   '<b>Try natural language or these:</b>',
   '🔎 /scan — top live markets by volume',
   '📊 <code>analyze 2</code> — decide on #2 from the last scan',
-  '🔗 paste a <i>Polymarket link</i> — I’ll analyze it',
-  '🧠 “is X going to happen?” — I’ll find & analyze it',
+  "🔗 paste a <i>Polymarket link</i> — I'll analyze it",
+  "🧠 \"is X going to happen?\" — I'll find & analyze it",
   '💵 <code>paper buy yes 100</code> — log a $100 paper trade',
   '📈 /positions · 📊 /results · ❓ /why',
   '',
@@ -347,8 +348,11 @@ const HELP = [
 
 // ---- Top-level dispatcher -------------------------------------------------
 
-async function handleMessage(chatId, text) {
-  db.addConversation(chatId, 'user', text);
+// evidenceContext is injected by the caller (bot.js) as a system-level aside so
+// it is never persisted as user text — preventing the compounding where every
+// turn re-embeds all prior evidence and crowds out real conversation.
+async function handleMessage(chatId, text, evidenceContext = '') {
+  db.addConversation(chatId, 'user', text); // clean user text only, no evidence blob
   if (isSelfContextQuery(text)) {
     const reply = renderSelfContext(chatId);
     remember(chatId, { action: 'answered self-context query', evidence: text.slice(0, 160), result: reply.replace(/<[^>]+>/g, '').slice(0, 300), version: require('../package.json').version, model: getConfig().minimaxModel || 'configured model', cost: 'none' });
@@ -368,7 +372,7 @@ async function handleMessage(chatId, text) {
     case 'positions': reply = doPositions(chatId); break;
     case 'results': reply = doResults(chatId); break;
     case 'why': reply = doWhy(chatId); break;
-    default: reply = await doChat(chatId, text); break;
+    default: reply = await doChat(chatId, text, evidenceContext); break;
   }
 
   remember(chatId, { action: `PolyEdge intent:${intent.action}`, evidence: JSON.stringify(intent).slice(0, 500), result: String(reply).replace(/<[^>]+>/g, '').slice(0, 320), version: require('../package.json').version, model: getConfig().minimaxModel || 'configured model', cost: 'not reported by provider/tool' });
