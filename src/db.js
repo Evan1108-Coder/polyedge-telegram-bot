@@ -85,6 +85,24 @@ function migrate(database) {
       finished_at TEXT,
       result TEXT
     );
+
+    -- Scan results: ordered list of markets from the last /scan or doScan() call
+    -- per chat. Persists across restarts so "analyze my second pick" resolves
+    -- even after a pm2 restart or /update.
+    CREATE TABLE IF NOT EXISTS scan_results (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      chat_id TEXT NOT NULL,
+      scan_date TEXT NOT NULL,
+      position INTEGER NOT NULL,
+      market_id TEXT NOT NULL,
+      question TEXT NOT NULL,
+      slug TEXT,
+      url TEXT,
+      current_prob REAL,
+      volume REAL,
+      raw_json TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
   `);
 }
 
@@ -241,6 +259,62 @@ function closePaperTrade(id, exitPrice) {
   return { ...trade, status: 'closed', exit_price: exitPrice, pnl };
 }
 
+function todayStamp() {
+  const d = new Date();
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+// Persist an ordered market list so ordinal follow-ups ("analyze my second
+// pick") survive a pm2 restart. Overwrites any existing scan for this chat
+// dated today — one scan per chat per day is the expected pattern.
+function recordScanResults(chatId, markets) {
+  if (!Array.isArray(markets) || !markets.length) return;
+  const db = openDb();
+  const today = todayStamp();
+  // Remove today's previous scan for this chat before re-inserting.
+  db.prepare(`DELETE FROM scan_results WHERE chat_id = ? AND scan_date = ?`).run(String(chatId), today);
+  const stmt = db.prepare(`
+    INSERT INTO scan_results (chat_id, scan_date, position, market_id, question, slug, url, current_prob, volume, raw_json)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  markets.forEach((m, i) => {
+    stmt.run(
+      String(chatId),
+      today,
+      i + 1,
+      String(m.id || m.conditionId || ''),
+      String(m.question || m.title || ''),
+      String(m.slug || ''),
+      String(m.url || ''),
+      m.probability ?? m.currentProb ?? null,
+      m.volume ?? null,
+      JSON.stringify(m),
+    );
+  });
+}
+
+// Retrieve the most recent scan for this chat (today first, then most recent).
+function getScanResults(chatId) {
+  const rows = openDb()
+    .prepare(`
+      SELECT * FROM scan_results
+      WHERE chat_id = ?
+      ORDER BY scan_date DESC, position ASC
+    `)
+    .all(String(chatId));
+  if (!rows.length) return [];
+  // Return only the most recent batch (same scan_date).
+  const latest = rows[0].scan_date;
+  return rows.filter((r) => r.scan_date === latest);
+}
+
+// Look up one item from the persisted scan by 1-based position.
+function getScanResultAtPosition(chatId, position) {
+  const rows = getScanResults(chatId);
+  return rows.find((r) => r.position === Number(position)) || null;
+}
+
 module.exports = {
   openDb,
   getSetting,
@@ -255,4 +329,7 @@ module.exports = {
   getAllTrades,
   getTradeById,
   closePaperTrade,
+  recordScanResults,
+  getScanResults,
+  getScanResultAtPosition,
 };

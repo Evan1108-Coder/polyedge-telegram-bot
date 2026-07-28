@@ -57,9 +57,13 @@ function fastIntent(text) {
   if (/^\/?(help|start)\b/.test(low)) return { action: 'help' };
   if (/^\/?why\b/.test(low)) return { action: 'why' };
 
-  // "analyze 3", "analyse #2", "look at 1"
-  const idx = low.match(/^\/?(?:analyze|analyse|look at|check|decide|rate)\s+#?(\d{1,2})$/);
+  // "analyze 3", "analyse #2", "look at 1", "analyze the second one", "analyze 2nd"
+  const idx = low.match(/^\/?(?:analyze|analyse|look at|check|decide|rate)\s+(?:the\s+)?#?(\d{1,2})(?:st|nd|rd|th)?$/);
   if (idx) return { action: 'analyze', listIndex: Number(idx[1]) };
+  // Ordinal words: "analyze the second one", "check the third market"
+  const ORDINALS = { first: 1, second: 2, third: 3, fourth: 4, fifth: 5, sixth: 6, seventh: 7, eighth: 8, ninth: 9, tenth: 10 };
+  const ordM = low.match(/^\/?(?:analyze|analyse|look at|check|decide|rate)\s+(?:the\s+)?(first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth)\b/);
+  if (ordM && ORDINALS[ordM[1]]) return { action: 'analyze', listIndex: ORDINALS[ordM[1]] };
 
   // A pasted Polymarket URL anywhere in the message.
   if (/polymarket\.com\//i.test(t)) return { action: 'analyze', reference: t };
@@ -119,14 +123,23 @@ async function classifyIntent(text) {
 async function doScan(chatId) {
   const markets = await polymarket.getTrendingMarkets(10);
   session(chatId).lastScan = markets;
+  // Persist so ordinal follow-ups survive a pm2 restart or /update.
+  db.recordScanResults(chatId, markets);
   return render.renderMarketList(markets);
 }
 
 async function resolveTarget(chatId, intent) {
   const s = session(chatId);
-  // By list index from the last scan.
+  // By list index from the last scan. Fall back to the durable DB if the
+  // in-memory session was wiped by a restart (pm2 restart / /update).
   if (intent.listIndex) {
-    const m = s.lastScan[intent.listIndex - 1];
+    let m = s.lastScan[intent.listIndex - 1];
+    if (!m) {
+      const row = db.getScanResultAtPosition(chatId, intent.listIndex);
+      if (row) {
+        try { m = JSON.parse(row.raw_json); } catch { m = null; }
+      }
+    }
     if (!m) return { error: `I don't have a #${intent.listIndex} from the last scan. Try /scan first.` };
     return { market: m };
   }
